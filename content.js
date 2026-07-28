@@ -4,7 +4,6 @@
   if (globalThis.__avenNoRentAlertLoaded) return;
   globalThis.__avenNoRentAlertLoaded = true;
 
-  const STORAGE_KEY = 'noRentGuests';
   const ALERT_ROOT_ID = 'aven-no-rent-alert-root';
   const IS_TOP_FRAME = window.top === window;
   const SELECTORS = [
@@ -16,6 +15,12 @@
   const TITLES = new Set(['mr', 'mrs', 'ms', 'miss', 'dr', 'prof', 'sir', 'madam']);
 
   let noRentGuests = [];
+  let sharedStorageOk = false;
+  let sharedStorageError = '';
+  let sharedDataPath = '';
+  let sharedCanWrite = false;
+  let refreshPromise = null;
+
   let lastLocalGuestName = null;
   let lastReportTime = 0;
   let scanTimer = 0;
@@ -267,6 +272,31 @@
     }
   }
 
+  async function refreshSharedList(forceRefresh = false) {
+    if (!IS_TOP_FRAME) return;
+    if (refreshPromise) return refreshPromise;
+
+    refreshPromise = chrome.runtime.sendMessage({
+      type: 'aven-shared-get',
+      forceRefresh
+    }).then(state => {
+      if (Array.isArray(state?.guests)) noRentGuests = state.guests;
+      sharedStorageOk = state?.ok === true;
+      sharedStorageError = clean(state?.error);
+      sharedDataPath = clean(state?.dataPath);
+      sharedCanWrite = state?.canWrite === true;
+      evaluateTopFrame();
+    }).catch(error => {
+      sharedStorageOk = false;
+      sharedStorageError = error?.message || String(error);
+      evaluateTopFrame();
+    }).finally(() => {
+      refreshPromise = null;
+    });
+
+    return refreshPromise;
+  }
+
   function reportLocalGuest(force = false) {
     const guestName = findDisplayedGuestName();
     const now = Date.now();
@@ -284,6 +314,7 @@
         updatedAt: now
       });
       evaluateTopFrame();
+      if (changed) refreshSharedList(true);
     }
 
     chrome.runtime.sendMessage({
@@ -300,11 +331,26 @@
   if (IS_TOP_FRAME) {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message?.type === 'aven-forwarded-guest-update') {
+        const previousName = getBestReportedGuest();
         frameGuests.set(message.frameId, {
           guestName: clean(message.guestName),
           frameUrl: clean(message.frameUrl),
           updatedAt: Date.now()
         });
+        const nextName = getBestReportedGuest();
+        evaluateTopFrame();
+        if (normalize(previousName) !== normalize(nextName)) refreshSharedList(true);
+        return;
+      }
+
+      if (message?.type === 'aven-shared-list-updated') {
+        const state = message.state || {};
+        if (Array.isArray(state.guests)) noRentGuests = state.guests;
+        sharedStorageOk = state.ok === true;
+        sharedStorageError = clean(state.error);
+        sharedDataPath = clean(state.dataPath);
+        sharedCanWrite = state.canWrite === true;
+        dismissedSignature = '';
         evaluateTopFrame();
         return;
       }
@@ -322,24 +368,16 @@
           savedGuestCount: noRentGuests.length,
           pageUrl: location.href,
           frameReports: [...frameGuests.values()].filter(report => report.guestName).length,
-          selectors: SELECTORS
+          selectors: SELECTORS,
+          sharedStorageOk,
+          sharedStorageError,
+          sharedDataPath,
+          sharedCanWrite
         });
       }
     });
 
-    chrome.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName !== 'local' || !changes[STORAGE_KEY]) return;
-      noRentGuests = Array.isArray(changes[STORAGE_KEY].newValue)
-        ? changes[STORAGE_KEY].newValue
-        : [];
-      dismissedSignature = '';
-      evaluateTopFrame();
-    });
-
-    chrome.storage.local.get(STORAGE_KEY).then(result => {
-      noRentGuests = Array.isArray(result[STORAGE_KEY]) ? result[STORAGE_KEY] : [];
-      evaluateTopFrame();
-    }).catch(error => console.error('Aven No-Rent Alert storage error:', error));
+    refreshSharedList(true);
   }
 
   new MutationObserver(scheduleScan).observe(document.documentElement, {
@@ -350,4 +388,5 @@
 
   reportLocalGuest(true);
   setInterval(() => reportLocalGuest(true), 3000);
+  if (IS_TOP_FRAME) setInterval(() => refreshSharedList(true), 30000);
 })();
