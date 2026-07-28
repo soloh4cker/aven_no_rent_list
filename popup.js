@@ -1,8 +1,10 @@
 (() => {
   'use strict';
 
-  const STORAGE_KEY = 'noRentGuests';
+  const LEGACY_STORAGE_KEY = 'noRentGuests';
+  const MIGRATION_FLAG_KEY = 'sharedStorageMigrationPrompted';
   const $ = id => document.getElementById(id);
+
   const elements = {
     form: $('guestForm'),
     editId: $('editId'),
@@ -20,7 +22,11 @@
     exportButton: $('exportButton'),
     importButton: $('importButton'),
     importFile: $('importFile'),
+    utilities: $('utilities'),
+    managementPanel: $('managementPanel'),
+    readOnlyNotice: $('readOnlyNotice'),
     status: $('status'),
+    storageStatus: $('storageStatus'),
     pageDomain: $('pageDomain'),
     detectedGuest: $('detectedGuest'),
     matchResult: $('matchResult'),
@@ -29,12 +35,17 @@
   };
 
   let guests = [];
+  let canWrite = false;
+  let storageReady = false;
+  let dataPath = '';
+  let managerAccount = '';
 
   const clean = value => String(value ?? '').replace(/\s+/g, ' ').trim();
   const normalize = value => clean(value)
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLocaleLowerCase();
+
   const makeId = () => crypto.randomUUID
     ? crypto.randomUUID()
     : `g-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -46,7 +57,7 @@
     showMessage.timer = setTimeout(() => {
       elements.status.textContent = '';
       elements.status.className = 'status';
-    }, 3500);
+    }, 4000);
   }
 
   function sortGuests() {
@@ -56,15 +67,82 @@
     );
   }
 
-  async function persist(successText) {
+  function setStorageStatus(state) {
+    storageReady = state?.ok === true;
+    canWrite = state?.canWrite === true;
+    dataPath = clean(state?.dataPath);
+    managerAccount = clean(state?.managerAccount);
+
+    elements.storageStatus.classList.remove('diagnostic-good', 'diagnostic-bad');
+
+    if (!storageReady) {
+      elements.storageStatus.textContent = `Shared storage: Not connected — ${clean(state?.error) || 'unknown error'}`;
+      elements.storageStatus.classList.add('diagnostic-bad');
+    } else if (canWrite) {
+      elements.storageStatus.textContent = `Shared storage: Connected — manager access${dataPath ? ` — ${dataPath}` : ''}`;
+      elements.storageStatus.classList.add('diagnostic-good');
+    } else {
+      elements.storageStatus.textContent = `Shared storage: Connected — read-only front desk access${managerAccount ? ` — manager: ${managerAccount}` : ''}`;
+      elements.storageStatus.classList.add('diagnostic-good');
+    }
+
+    elements.managementPanel.classList.toggle('hidden', !storageReady || !canWrite);
+    elements.utilities.classList.toggle('hidden', !storageReady || !canWrite);
+    elements.readOnlyNotice.classList.toggle('hidden', !storageReady || canWrite);
+  }
+
+  async function sharedGet(forceRefresh = false) {
     try {
-      await chrome.storage.local.set({ [STORAGE_KEY]: guests });
+      return await chrome.runtime.sendMessage({
+        type: 'aven-shared-get',
+        forceRefresh
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        guests,
+        canWrite: false,
+        error: error?.message || String(error)
+      };
+    }
+  }
+
+  async function loadSharedList(forceRefresh = false) {
+    const state = await sharedGet(forceRefresh);
+    if (Array.isArray(state?.guests)) guests = state.guests;
+    sortGuests();
+    setStorageStatus(state);
+    render();
+    return state;
+  }
+
+  async function persist(successText) {
+    if (!canWrite) {
+      showMessage('This Windows account has read-only access.', 'error');
+      return false;
+    }
+
+    try {
+      const state = await chrome.runtime.sendMessage({
+        type: 'aven-shared-replace',
+        guests
+      });
+
+      if (!state?.ok) {
+        throw new Error(state?.error || 'Could not save the shared list.');
+      }
+
+      guests = Array.isArray(state.guests) ? state.guests : guests;
+      sortGuests();
+      setStorageStatus(state);
       render();
       if (successText) showMessage(successText, 'success');
       await checkCurrentPage(false);
+      return true;
     } catch (error) {
       console.error(error);
-      showMessage('Could not save the list.', 'error');
+      showMessage(error?.message || 'Could not save the shared list.', 'error');
+      return false;
     }
   }
 
@@ -77,6 +155,7 @@
   }
 
   function beginEdit(guest) {
+    if (!canWrite) return;
     elements.editId.value = guest.id;
     elements.first.value = clean(guest.firstName);
     elements.last.value = clean(guest.lastName);
@@ -125,20 +204,23 @@
       const name = document.createElement('p');
       name.className = 'name';
       name.textContent = `${clean(guest.lastName)}, ${clean(guest.firstName)}`;
+      header.append(name);
 
-      const actions = document.createElement('div');
-      actions.className = 'actions';
-      actions.append(
-        createButton('Edit', 'small', () => beginEdit(guest)),
-        createButton('Delete', 'small delete', async () => {
-          if (!confirm(`Remove ${guest.firstName} ${guest.lastName} from the no-rent list?`)) return;
-          guests = guests.filter(item => item.id !== guest.id);
-          if (elements.editId.value === guest.id) resetForm();
-          await persist('Guest removed.');
-        })
-      );
-
-      header.append(name, actions);
+      if (canWrite) {
+        const actions = document.createElement('div');
+        actions.className = 'actions';
+        actions.append(
+          createButton('Edit', 'small', () => beginEdit(guest)),
+          createButton('Delete', 'small delete', async () => {
+            if (!confirm(`Remove ${guest.firstName} ${guest.lastName} from the no-rent list?`)) return;
+            const previous = guests;
+            guests = guests.filter(item => item.id !== guest.id);
+            if (elements.editId.value === guest.id) resetForm();
+            if (!await persist('Guest removed.')) guests = previous;
+          })
+        );
+        header.append(actions);
+      }
 
       const details = document.createElement('p');
       details.className = 'details';
@@ -171,7 +253,7 @@
         files: ['content.css']
       });
     } catch {
-      // CSS may already be present or a particular frame may not allow injection.
+      // The CSS may already be present or a frame may not permit injection.
     }
 
     try {
@@ -188,6 +270,7 @@
 
   async function checkCurrentPage(showCheckingText = true) {
     if (showCheckingText) {
+      await loadSharedList(true);
       elements.pageDomain.textContent = 'Checking the current tab...';
       elements.detectedGuest.textContent = '';
       elements.matchResult.textContent = '';
@@ -210,7 +293,7 @@
       if (!result?.loaded) {
         const injected = await injectDetector(tab.id);
         if (injected) {
-          await new Promise(resolve => setTimeout(resolve, 600));
+          await new Promise(resolve => setTimeout(resolve, 700));
           result = await sendDiagnostic(tab.id);
         }
       }
@@ -219,7 +302,7 @@
         elements.detectedGuest.textContent = 'Detector status: Not running on this tab';
         elements.matchResult.textContent = '';
         elements.diagnosticHelp.textContent =
-          'Reload the Aven tab, then check again. If it still fails, the Aven website domain is not in the extension permission list.';
+          'Reload the Aven tab, then check again. If it still fails, verify the Aven website domain in the extension permissions.';
         return;
       }
 
@@ -228,7 +311,7 @@
         : 'Detector is running, but no guest-name element is currently visible.';
 
       if (!result.guestName) {
-        elements.matchResult.textContent = `Saved no-rent records in this Windows/Chrome profile: ${result.savedGuestCount}`;
+        elements.matchResult.textContent = `Saved shared no-rent records: ${result.savedGuestCount}`;
         elements.diagnosticHelp.textContent =
           'Open a reservation so the guest profile is visible, then click “Check current page again.”';
       } else if (result.matchCount > 0) {
@@ -236,7 +319,7 @@
         elements.diagnosticHelp.textContent =
           'A red warning should be visible on the Aven page. Close this extension popup to view it.';
       } else {
-        elements.matchResult.textContent = 'Match result: No saved record matched this detected name';
+        elements.matchResult.textContent = 'Match result: No shared record matched this detected name';
         elements.diagnosticHelp.textContent =
           'Check the saved first and last names below. Name order and capitalization do not matter.';
       }
@@ -245,12 +328,42 @@
       elements.pageDomain.textContent = 'Could not test the current page.';
       elements.detectedGuest.textContent = '';
       elements.matchResult.textContent = '';
-      elements.diagnosticHelp.textContent = error.message || 'Unknown diagnostic error.';
+      elements.diagnosticHelp.textContent = error?.message || 'Unknown diagnostic error.';
+    }
+  }
+
+  async function maybeMigrateLegacyList() {
+    if (!storageReady || !canWrite || guests.length > 0) return;
+
+    try {
+      const local = await chrome.storage.local.get([
+        LEGACY_STORAGE_KEY,
+        MIGRATION_FLAG_KEY
+      ]);
+      const legacyGuests = Array.isArray(local[LEGACY_STORAGE_KEY])
+        ? local[LEGACY_STORAGE_KEY]
+        : [];
+
+      if (!legacyGuests.length || local[MIGRATION_FLAG_KEY] === true) return;
+      await chrome.storage.local.set({ [MIGRATION_FLAG_KEY]: true });
+
+      if (!confirm(`Version 1.2 has ${legacyGuests.length} local guest record(s). Move them into the new shared list now?`)) {
+        return;
+      }
+
+      guests = legacyGuests;
+      sortGuests();
+      if (await persist('Existing Version 1.2 list moved into shared storage.')) {
+        await chrome.storage.local.remove(LEGACY_STORAGE_KEY);
+      }
+    } catch (error) {
+      console.error('Legacy migration failed:', error);
     }
   }
 
   elements.form.addEventListener('submit', async event => {
     event.preventDefault();
+    if (!canWrite) return showMessage('This Windows account has read-only access.', 'error');
 
     const firstName = clean(elements.first.value);
     const lastName = clean(elements.last.value);
@@ -263,14 +376,12 @@
       return;
     }
 
+    const previous = guests.map(guest => ({ ...guest }));
     const now = new Date().toISOString();
 
     if (id) {
       const index = guests.findIndex(guest => guest.id === id);
-      if (index < 0) {
-        showMessage('Entry not found.', 'error');
-        return;
-      }
+      if (index < 0) return showMessage('Entry not found.', 'error');
       guests[index] = {
         ...guests[index],
         firstName,
@@ -280,15 +391,18 @@
         updatedAt: now
       };
       sortGuests();
-      await persist('Changes saved.');
+      if (!await persist('Changes saved.')) {
+        guests = previous;
+        render();
+        return;
+      }
     } else {
       const duplicate = guests.some(guest =>
         normalize(guest.firstName) === normalize(firstName) &&
         normalize(guest.lastName) === normalize(lastName)
       );
-      if (duplicate && !confirm('A guest with the same name already exists. Add another entry anyway?')) {
-        return;
-      }
+      if (duplicate && !confirm('A guest with the same name already exists. Add another entry anyway?')) return;
+
       guests.push({
         id: makeId(),
         firstName,
@@ -299,7 +413,11 @@
         updatedAt: now
       });
       sortGuests();
-      await persist('Guest added.');
+      if (!await persist('Guest added to the shared list.')) {
+        guests = previous;
+        render();
+        return;
+      }
     }
 
     resetForm();
@@ -310,10 +428,11 @@
   elements.checkPage.addEventListener('click', () => checkCurrentPage(true));
 
   elements.exportButton.addEventListener('click', () => {
+    if (!canWrite) return;
     const blob = new Blob([
       JSON.stringify({
         format: 'aven-no-rent-backup',
-        version: 1,
+        version: 2,
         exportedAt: new Date().toISOString(),
         guests
       }, null, 2)
@@ -328,12 +447,14 @@
   });
 
   elements.importButton.addEventListener('click', () => {
+    if (!canWrite) return;
     elements.importFile.value = '';
     elements.importFile.click();
   });
 
   elements.importFile.addEventListener('change', async () => {
     try {
+      if (!canWrite) throw new Error('This Windows account has read-only access.');
       const file = elements.importFile.files?.[0];
       if (!file) return;
 
@@ -351,20 +472,21 @@
         updatedAt: new Date().toISOString()
       })).filter(guest => guest.firstName && guest.lastName);
 
-      if (!confirm(`Import ${cleaned.length} guest(s)? This replaces the current list.`)) return;
+      if (!confirm(`Import ${cleaned.length} guest(s)? This replaces the current shared list.`)) return;
+      const previous = guests;
       guests = cleaned;
       sortGuests();
-      await persist('Backup imported.');
+      if (!await persist('Backup imported into shared storage.')) guests = previous;
       resetForm();
     } catch (error) {
-      showMessage(error.message || 'Import failed.', 'error');
+      showMessage(error?.message || 'Import failed.', 'error');
     }
   });
 
-  chrome.storage.local.get(STORAGE_KEY).then(result => {
-    guests = Array.isArray(result[STORAGE_KEY]) ? result[STORAGE_KEY] : [];
-    sortGuests();
-    render();
-    checkCurrentPage(true);
-  }).catch(() => showMessage('Could not load saved list.', 'error'));
+  loadSharedList(true).then(async () => {
+    await maybeMigrateLegacyList();
+    await checkCurrentPage(true);
+  }).catch(error => {
+    setStorageStatus({ ok: false, error: error?.message || String(error) });
+  });
 })();

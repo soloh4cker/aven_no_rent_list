@@ -18,7 +18,8 @@
 
   <main>
     <section class="panel diagnostic-panel">
-      <div class="title-row"><h2>Current Aven page test</h2></div>
+      <div class="title-row"><h2>System status</h2></div>
+      <p id="storageStatus" class="diagnostic-line">Checking shared storage...</p>
       <p id="pageDomain" class="diagnostic-line">Checking the current tab...</p>
       <p id="detectedGuest" class="diagnostic-line"></p>
       <p id="matchResult" class="diagnostic-line"></p>
@@ -26,7 +27,12 @@
       <p id="diagnosticHelp" class="diagnostic-help"></p>
     </section>
 
-    <section class="panel">
+    <section id="readOnlyNotice" class="panel read-only-panel hidden">
+      <h2>Read-only front desk access</h2>
+      <p>This Windows account can view the shared list and receive warnings, but only the manager Windows account can add, edit, delete, or import records.</p>
+    </section>
+
+    <section id="managementPanel" class="panel">
       <div class="title-row">
         <h2 id="formTitle">Add guest</h2>
         <button id="cancelEdit" class="link hidden" type="button">Cancel edit</button>
@@ -51,13 +57,13 @@
       <div id="list" class="list"></div>
     </section>
 
-    <div class="utilities">
+    <div id="utilities" class="utilities">
       <button id="exportButton" type="button">Export backup</button>
       <button id="importButton" type="button">Import backup</button>
       <input id="importFile" type="file" accept="application/json,.json" hidden>
     </div>
     <p id="status" class="status"></p>
-    <p class="privacy">Version 1.2 stores the list only in this Chrome profile. Separate Windows logins do not share this list.</p>
+    <p class="privacy">Version 2.0 uses one shared local file for every Windows login on this computer. No data is sent over the internet.</p>
   </main>
 
   <script src="popup.js"></script>
