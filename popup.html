@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aven No-Rent Alert</title>
+  <link rel="stylesheet" href="popup.css">
+  <link rel="stylesheet" href="diagnostic.css">
+</head>
+<body>
+  <header>
+    <div class="mark">!</div>
+    <div>
+      <h1>No-Rent List</h1>
+      <p>Aven guest warning manager</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel diagnostic-panel">
+      <div class="title-row"><h2>Current Aven page test</h2></div>
+      <p id="pageDomain" class="diagnostic-line">Checking the current tab...</p>
+      <p id="detectedGuest" class="diagnostic-line"></p>
+      <p id="matchResult" class="diagnostic-line"></p>
+      <button id="checkPage" class="secondary-full" type="button">Check current page again</button>
+      <p id="diagnosticHelp" class="diagnostic-help"></p>
+    </section>
+
+    <section class="panel">
+      <div class="title-row">
+        <h2 id="formTitle">Add guest</h2>
+        <button id="cancelEdit" class="link hidden" type="button">Cancel edit</button>
+      </div>
+
+      <form id="guestForm" autocomplete="off">
+        <input id="editId" type="hidden">
+        <div class="grid">
+          <label>First name *<input id="firstName" maxlength="80" required></label>
+          <label>Last name *<input id="lastName" maxlength="80" required></label>
+        </div>
+        <label>Reason<textarea id="reason" rows="3" maxlength="500"></textarea></label>
+        <label>Past confirmation number<input id="confirmationNumber" maxlength="100"></label>
+        <button id="saveButton" class="primary" type="submit">Add to no-rent list</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <div class="title-row"><h2>Saved guests <span id="count">0</span></h2></div>
+      <input id="search" type="search" placeholder="Search name, reason, or confirmation #">
+      <div id="empty" class="empty">No guests have been added yet.</div>
+      <div id="list" class="list"></div>
+    </section>
+
+    <div class="utilities">
+      <button id="exportButton" type="button">Export backup</button>
+      <button id="importButton" type="button">Import backup</button>
+      <input id="importFile" type="file" accept="application/json,.json" hidden>
+    </div>
+    <p id="status" class="status"></p>
+    <p class="privacy">Version 1.2 stores the list only in this Chrome profile. Separate Windows logins do not share this list.</p>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>
