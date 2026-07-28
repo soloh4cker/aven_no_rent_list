@@ -1,0 +1,65 @@
+name: Validate Version 2
+
+on:
+  push:
+    branches:
+      - v2-shared-storage
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate manifest JSON
+        shell: powershell
+        run: |
+          $manifest = Get-Content -LiteralPath manifest.json -Raw | ConvertFrom-Json
+          if ($manifest.manifest_version -ne 3) { throw 'Manifest V3 is required.' }
+          if ($manifest.version -ne '2.0.0') { throw 'Expected extension version 2.0.0.' }
+          if ($manifest.permissions -notcontains 'nativeMessaging') { throw 'nativeMessaging permission is missing.' }
+
+      - name: Check JavaScript syntax
+        shell: powershell
+        run: |
+          node --check background.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --check content.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --check popup.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check PowerShell installer syntax
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'installer\Install.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+
+      - name: Compile native messaging host
+        shell: powershell
+        run: |
+          $compiler = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path -LiteralPath $compiler)) {
+            $compiler = "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+          }
+          if (-not (Test-Path -LiteralPath $compiler)) {
+            throw 'C# compiler not found on runner.'
+          }
+          $output = Join-Path $env:RUNNER_TEMP 'AvenNoRentHost.exe'
+          & $compiler /nologo /target:exe /optimize+ /out:$output /reference:System.Web.Extensions.dll native-host\AvenNoRentHost.cs
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) {
+            throw 'Native host compilation failed.'
+          }
